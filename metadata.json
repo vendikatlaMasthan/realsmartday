@@ -1,0 +1,6 @@
+{
+  "name": "SmartDay",
+  "description": "Mobile-first personal productivity OS with habit tracking, focus sessions, planning, and metrics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
