@@ -15,11 +15,12 @@ import {
   DataSource,
   DailyRingsState,
   SupportedLanguage,
-  ExamItem,
-  ScheduleItem,
   ReminderItem,
-  DailySummary,
-  NewsDigest,
+  ScheduleItem,
+  ScheduleConflict,
+  PlannedDaySchedule,
+  Subtask,
+  ExtractedActionItem,
 } from '../types';
 import {
   loadStoredProfile,
@@ -40,20 +41,23 @@ import {
   saveStoredReports,
   loadStoredSources,
   saveStoredSources,
-  loadStoredExams,
-  saveStoredExams,
-  loadStoredSchedule,
-  saveStoredSchedule,
   loadStoredReminders,
   saveStoredReminders,
-  loadStoredDailySummary,
-  saveStoredDailySummary,
-  loadStoredNewsDigest,
-  saveStoredNewsDigest,
   clearAllLocalData,
 } from '../storage';
 import { translate } from '../i18n';
-import { classifyTask, classifyTaskOffline, generateDailySummary, fetchDailyNewsDigest } from '../services/aiService';
+import {
+  calculateReminderTimestamp,
+  formatTimeFromEpoch,
+  playNotificationChime,
+  triggerBrowserNotification,
+  isDuringQuietHours,
+} from '../services/reminderEngine';
+import {
+  detectScheduleConflicts,
+  findAvailableSlots,
+} from '../services/schedulingEngine';
+import { initialStudentSchedule } from '../data/mockSchedule';
 
 interface ToastState {
   visible: boolean;
@@ -72,12 +76,10 @@ interface SmartDayContextType {
   highlights: Highlight[];
   reports: Report[];
   sources: DataSource[];
-  exams: ExamItem[];
-  scheduleItems: ScheduleItem[];
   reminders: ReminderItem[];
-  dailySummary: DailySummary | null;
-  newsDigest: NewsDigest | null;
-  activeAlarmReminder: ReminderItem | null;
+  scheduleItems: ScheduleItem[];
+  activeAlertReminder: ReminderItem | null;
+  activeRemindersCount: number;
   toast: ToastState;
   activeFocusSession: {
     isRunning: boolean;
@@ -92,9 +94,14 @@ interface SmartDayContextType {
   todayTasks: Task[];
   todayFocusMinutes: number;
   currentStreak: number;
+  conflicts: ScheduleConflict[];
 
   // Task Actions
   addTask: (task: Omit<Task, 'id' | 'createdAt' | 'status'> & { category?: TaskCategory }) => void;
+  createTaskWithReminder: (
+    task: Omit<Task, 'id' | 'createdAt' | 'status'>,
+    reminderOffsetMin?: number
+  ) => Task;
   toggleTask: (taskId: string) => void;
   deleteTask: (taskId: string) => void;
   updateTask: (task: Task) => void;
@@ -102,6 +109,17 @@ interface SmartDayContextType {
   convertTaskToHabit: (taskId: string) => void;
   batchCompleteTasks: (taskIds: string[]) => void;
   batchDeleteTasks: (taskIds: string[]) => void;
+  breakdownTask: (taskId: string, steps: Subtask[]) => void;
+  applyDayPlan: (plan: PlannedDaySchedule) => void;
+  rescheduleTaskWithSlot: (taskId: string, newTime: string, newDate?: string) => void;
+  addExtractedTasks: (items: ExtractedActionItem[]) => void;
+
+  // Reminder Actions
+  snoozeReminder: (reminderId: string, minutes: number) => void;
+  dismissReminder: (reminderId: string) => void;
+  completeReminder: (reminderId: string) => void;
+  deleteReminder: (reminderId: string) => void;
+  scheduleTestReminder: (seconds?: number) => void;
 
   // Habit Actions
   addHabit: (habit: Omit<Habit, 'id' | 'createdAt' | 'streak' | 'longest' | 'skips' | 'logs'>) => void;
@@ -118,35 +136,11 @@ interface SmartDayContextType {
 
   // Notes Actions
   addNote: (title: string, body: string, taskId?: string) => void;
-  updateNote: (id: string, title: string, body: string) => void;
   deleteNote: (id: string) => void;
   togglePinNote: (id: string) => void;
 
   // Files Actions
   addFile: (file: Omit<FileItem, 'id' | 'uploadedAt'>) => void;
-
-  // Exams Actions
-  addExam: (exam: ExamItem) => void;
-  deleteExam: (id: string) => void;
-
-  // Schedule & Timetable Actions
-  addScheduleItem: (item: Omit<ScheduleItem, 'id'>) => void;
-  updateScheduleItem: (item: ScheduleItem) => void;
-  toggleScheduleComplete: (id: string) => void;
-  deleteScheduleItem: (id: string) => void;
-
-  // Reminders & Alarm Actions
-  addReminder: (title: string, dueTime: string, notes?: string) => void;
-  deleteReminder: (id: string) => void;
-  toggleReminderComplete: (id: string) => void;
-  snoozeReminder: (id: string, minutes?: number) => void;
-  triggerAlarm: (reminder: ReminderItem) => void;
-  dismissAlarm: () => void;
-  snoozeAlarm: (minutes?: number) => void;
-
-  // Daily Summary & News Actions
-  refreshDailySummary: () => Promise<void>;
-  refreshNewsDigest: () => Promise<void>;
 
   // Profile & Preferences
   updateProfile: (partial: Partial<UserProfile>) => void;
@@ -177,6 +171,9 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [highlights, setHighlights] = useState<Highlight[]>(loadStoredHighlights);
   const [reports, setReports] = useState<Report[]>(loadStoredReports);
   const [sources, setSources] = useState<DataSource[]>(loadStoredSources);
+  const [reminders, setReminders] = useState<ReminderItem[]>(loadStoredReminders);
+  const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>(initialStudentSchedule);
+  const [activeAlertReminder, setActiveAlertReminder] = useState<ReminderItem | null>(null);
 
   // Active running focus session player
   const [activeFocusSession, setActiveFocusSession] = useState<{
@@ -200,6 +197,62 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => saveStoredHighlights(highlights), [highlights]);
   useEffect(() => saveStoredReports(reports), [reports]);
   useEffect(() => saveStoredSources(sources), [sources]);
+  useEffect(() => saveStoredReminders(reminders), [reminders]);
+
+  // Periodic Reminder Heartbeat Scheduler (Checks every 3 seconds & on focus/visibilitychange)
+  useEffect(() => {
+    const checkReminders = () => {
+      const now = Date.now();
+      setReminders((prev) => {
+        let alertToTrigger: ReminderItem | null = null;
+        let hasChanges = false;
+
+        const next = prev.map((rem) => {
+          if (
+            (rem.status === 'scheduled' || rem.status === 'snoozed') &&
+            rem.targetTimestamp <= now
+          ) {
+            hasChanges = true;
+            if (!alertToTrigger) alertToTrigger = rem;
+            return { ...rem, status: 'triggered' as const };
+          }
+          return rem;
+        });
+
+        if (alertToTrigger) {
+          const item: ReminderItem = alertToTrigger;
+          const isQuiet = isDuringQuietHours(profile.quietHours);
+          if (!isQuiet) {
+            playNotificationChime();
+          }
+          triggerBrowserNotification(
+            `SmartDay: ${item.title}${isQuiet ? ' (Quiet Hours)' : ''}`,
+            item.dueTime ? `Due at ${item.dueTime}` : 'Due now',
+            item.id,
+            () => {
+              setActiveAlertReminder(item);
+            }
+          );
+          setActiveAlertReminder(item);
+        }
+
+        return hasChanges ? next : prev;
+      });
+    };
+
+    const interval = setInterval(checkReminders, 3000);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', checkReminders);
+      document.addEventListener('visibilitychange', checkReminders);
+    }
+    return () => {
+      clearInterval(interval);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', checkReminders);
+        document.removeEventListener('visibilitychange', checkReminders);
+      }
+    };
+  }, []);
 
   // Today string YYYY-MM-DD
   const todayStr = useMemo(() => {
@@ -231,6 +284,11 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const todayTasks = useMemo(() => {
     return tasks.filter((t) => !t.due || t.due.startsWith(todayStr));
   }, [tasks, todayStr]);
+
+  // Schedule Conflicts (Overlaps, past deadline, overcapacity, missed)
+  const conflicts = useMemo(() => {
+    return detectScheduleConflicts(tasks, scheduleItems, profile.workHours);
+  }, [tasks, scheduleItems, profile.workHours]);
 
   const tasksCompletedCount = useMemo(() => {
     return todayTasks.filter((t) => t.status === 'done').length;
@@ -361,16 +419,90 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [sessions, tasks, habits]);
 
   // 4. Task Actions
-  const addTask = useCallback((taskData: Omit<Task, 'id' | 'createdAt' | 'status'>) => {
-    const newTask: Task = {
-      ...taskData,
-      id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      createdAt: new Date().toISOString(),
-      status: 'scheduled',
-      tags: taskData.tags || [],
-    };
-    setTasks((prev) => [newTask, ...prev]);
-  }, []);
+  const addTask = useCallback(
+    (taskData: Omit<Task, 'id' | 'createdAt' | 'status'> & { category?: TaskCategory }) => {
+      const taskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+      let reminderId: string | undefined = taskData.reminderId;
+
+      if (taskData.reminderEnabled || taskData.time) {
+        reminderId = `rem-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        const targetTimestamp = calculateReminderTimestamp(
+          taskData.due || todayStr,
+          taskData.time || '11:00 AM',
+          taskData.reminderOffsetMin || 0
+        );
+        const newReminder: ReminderItem = {
+          id: reminderId,
+          taskId,
+          title: taskData.title,
+          dueTime: taskData.time || '11:00 AM',
+          date: taskData.due || todayStr,
+          targetTimestamp,
+          offsetMinutes: taskData.reminderOffsetMin || 0,
+          notes: taskData.notes,
+          status: 'scheduled',
+          completed: false,
+        };
+        setReminders((prev) => [newReminder, ...prev]);
+      }
+
+      const newTask: Task = {
+        ...taskData,
+        id: taskId,
+        createdAt: new Date().toISOString(),
+        status: 'scheduled',
+        tags: taskData.tags || [],
+        reminderId,
+      };
+      setTasks((prev) => [newTask, ...prev]);
+    },
+    [todayStr]
+  );
+
+  const createTaskWithReminder = useCallback(
+    (
+      taskData: Omit<Task, 'id' | 'createdAt' | 'status'>,
+      reminderOffsetMin: number = 0
+    ): Task => {
+      const taskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+      const reminderId = `rem-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+
+      const targetTimestamp = calculateReminderTimestamp(
+        taskData.due || todayStr,
+        taskData.time || '11:00 AM',
+        reminderOffsetMin
+      );
+
+      const newReminder: ReminderItem = {
+        id: reminderId,
+        taskId,
+        title: taskData.title,
+        dueTime: taskData.time || '11:00 AM',
+        date: taskData.due || todayStr,
+        targetTimestamp,
+        offsetMinutes: reminderOffsetMin,
+        notes: taskData.notes,
+        status: 'scheduled',
+        completed: false,
+      };
+
+      const newTask: Task = {
+        ...taskData,
+        id: taskId,
+        createdAt: new Date().toISOString(),
+        status: 'scheduled',
+        tags: taskData.tags || [],
+        reminderEnabled: true,
+        reminderOffsetMin,
+        reminderId,
+      };
+
+      setReminders((prev) => [newReminder, ...prev]);
+      setTasks((prev) => [newTask, ...prev]);
+      return newTask;
+    },
+    [todayStr]
+  );
 
   const toggleTask = useCallback(
     (taskId: string) => {
@@ -393,12 +525,31 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         )
       );
 
+      // Task completed/uncompleted -> update applicable pending reminder
+      setReminders((prev) =>
+        prev.map((r) => {
+          if (r.taskId === taskId) {
+            return {
+              ...r,
+              completed: willBeComplete,
+              status: willBeComplete ? 'cancelled' : 'scheduled',
+            };
+          }
+          return r;
+        })
+      );
+
       if (willBeComplete) {
         showToast(translate(profile.language, 'taskCompletedToast'), () => {
           // Revert on Undo
           setTasks((prev) =>
             prev.map((t) =>
               t.id === taskId ? { ...t, status: prevStatus, completedAt: prevCompletedAt } : t
+            )
+          );
+          setReminders((prev) =>
+            prev.map((r) =>
+              r.taskId === taskId ? { ...r, completed: false, status: 'scheduled' } : r
             )
           );
         });
@@ -409,17 +560,234 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const deleteTask = useCallback((taskId: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    // Cancel applicable pending notifications
+    setReminders((prev) =>
+      prev.map((r) => (r.taskId === taskId ? { ...r, status: 'cancelled' } : r))
+    );
   }, []);
 
-  const updateTask = useCallback((updated: Task) => {
-    setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-  }, []);
+  const updateTask = useCallback(
+    (updated: Task) => {
+      setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      // Sync with reminder if present
+      setReminders((prev) =>
+        prev.map((r) => {
+          if (r.taskId === updated.id) {
+            const newTarget = calculateReminderTimestamp(
+              updated.due || r.date || todayStr,
+              updated.time || r.dueTime,
+              r.offsetMinutes || 0
+            );
+            return {
+              ...r,
+              title: updated.title,
+              dueTime: updated.time || r.dueTime,
+              date: updated.due || r.date,
+              targetTimestamp: newTarget,
+            };
+          }
+          return r;
+        })
+      );
+    },
+    [todayStr]
+  );
 
   const rescheduleTask = useCallback((taskId: string, newTime?: string) => {
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, time: newTime || '14:00' } : t))
     );
   }, []);
+
+  const rescheduleTaskWithSlot = useCallback((taskId: string, newTime: string, newDate?: string) => {
+    const targetDate = newDate || todayStr;
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, time: newTime, due: targetDate } : t))
+    );
+    setReminders((prev) =>
+      prev.map((r) => {
+        if (r.taskId === taskId) {
+          const newTarget = calculateReminderTimestamp(targetDate, newTime, r.offsetMinutes || 0);
+          return {
+            ...r,
+            dueTime: newTime,
+            date: targetDate,
+            targetTimestamp: newTarget,
+            status: 'scheduled',
+          };
+        }
+        return r;
+      })
+    );
+    showToast(`Task rescheduled to ${newTime}`);
+  }, [todayStr, showToast]);
+
+  const breakdownTask = useCallback((taskId: string, steps: Subtask[]) => {
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, subtasks: steps } : t))
+    );
+    showToast(`Added ${steps.length} subtask steps to task!`);
+  }, [showToast]);
+
+  const applyDayPlan = useCallback((plan: PlannedDaySchedule) => {
+    setTasks((prev) => {
+      return prev.map((t) => {
+        const matchBlock = plan.blocks.find((b) => b.taskId === t.id);
+        if (matchBlock) {
+          return {
+            ...t,
+            time: matchBlock.startTime,
+            due: 'Today',
+            status: 'scheduled',
+            estimateMin: matchBlock.durationMin,
+          };
+        }
+        return t;
+      });
+    });
+    showToast(`Plan applied! Scheduled ${plan.tasksScheduledCount} tasks for today.`);
+  }, [showToast]);
+
+  const addExtractedTasks = useCallback((items: ExtractedActionItem[]) => {
+    const selected = items.filter((i) => i.selected !== false);
+    for (const item of selected) {
+      addTask({
+        title: item.title,
+        priority: item.priority || 'Med',
+        category: item.category || 'work',
+        estimateMin: 30,
+        due: item.explicitDeadline || 'Today',
+        time: item.time,
+        tags: ['notes-import'],
+        notes: `Extracted from note: "${item.originalText}"`,
+      });
+    }
+    showToast(`Imported ${selected.length} task${selected.length !== 1 ? 's' : ''} from notes!`);
+  }, [addTask, showToast]);
+
+  // 4b. Reminder Actions
+  const snoozeReminder = useCallback(
+    (reminderId: string, minutes: number) => {
+      const newTarget = Date.now() + minutes * 60 * 1000;
+      const formattedTime = formatTimeFromEpoch(newTarget);
+
+      // Track snoozeCount on task
+      let currentSnoozeCount = 0;
+      setReminders((prev) => {
+        const item = prev.find((r) => r.id === reminderId);
+        if (item?.taskId) {
+          setTasks((tPrev) =>
+            tPrev.map((t) => {
+              if (t.id === item.taskId) {
+                currentSnoozeCount = (t.snoozeCount || 0) + 1;
+                return { ...t, snoozeCount: currentSnoozeCount };
+              }
+              return t;
+            })
+          );
+        }
+        return prev.map((r) =>
+          r.id === reminderId
+            ? {
+                ...r,
+                targetTimestamp: newTarget,
+                status: 'snoozed',
+                snoozedUntil: formattedTime,
+              }
+            : r
+        );
+      });
+
+      setActiveAlertReminder((curr) => (curr?.id === reminderId ? null : curr));
+
+      if (currentSnoozeCount >= 3) {
+        showToast(`Snoozed 3 times: Tap conflicts to find an open time slot!`);
+      } else {
+        showToast(`Reminder snoozed for ${minutes} min (until ${formattedTime})`);
+      }
+    },
+    [showToast]
+  );
+
+  const dismissReminder = useCallback((reminderId: string) => {
+    setReminders((prev) =>
+      prev.map((r) => (r.id === reminderId ? { ...r, status: 'dismissed' } : r))
+    );
+    setActiveAlertReminder((curr) => (curr?.id === reminderId ? null : curr));
+  }, []);
+
+  const completeReminder = useCallback(
+    (reminderId: string) => {
+      setReminders((prev) => {
+        const target = prev.find((r) => r.id === reminderId);
+        if (target?.taskId) {
+          setTasks((tPrev) =>
+            tPrev.map((t) =>
+              t.id === target.taskId
+                ? { ...t, status: 'done', completedAt: new Date().toISOString() }
+                : t
+            )
+          );
+        }
+        return prev.map((r) =>
+          r.id === reminderId ? { ...r, completed: true, status: 'dismissed' } : r
+        );
+      });
+      setActiveAlertReminder((curr) => (curr?.id === reminderId ? null : curr));
+      showToast('Task marked as completed');
+    },
+    [showToast]
+  );
+
+  const deleteReminder = useCallback(
+    (reminderId: string) => {
+      setReminders((prev) => {
+        const target = prev.find((r) => r.id === reminderId);
+        if (target?.taskId) {
+          // Clear reminderId from task, keeping task intact
+          setTasks((tPrev) =>
+            tPrev.map((t) =>
+              t.id === target.taskId
+                ? { ...t, reminderId: undefined, reminderEnabled: false }
+                : t
+            )
+          );
+        }
+        return prev.filter((r) => r.id !== reminderId);
+      });
+      setActiveAlertReminder((curr) => (curr?.id === reminderId ? null : curr));
+      showToast('Reminder deleted');
+    },
+    [showToast]
+  );
+
+  const scheduleTestReminder = useCallback(
+    (seconds: number = 15) => {
+      const targetTime = Date.now() + seconds * 1000;
+      const formatted = formatTimeFromEpoch(targetTime);
+      const testRem: ReminderItem = {
+        id: `test-rem-${Date.now()}`,
+        title: 'Test Reminder: Milestone check',
+        dueTime: formatted,
+        date: todayStr,
+        targetTimestamp: targetTime,
+        offsetMinutes: 0,
+        notes: 'Verification test: in-app chime sound and notification banner.',
+        status: 'scheduled',
+        completed: false,
+        isTest: true,
+      };
+      setReminders((prev) => [testRem, ...prev]);
+      showToast(`Test alert scheduled in ${seconds}s. Please keep this browser tab open!`);
+    },
+    [todayStr, showToast]
+  );
+
+  const activeRemindersCount = useMemo(() => {
+    return reminders.filter(
+      (r) => !r.completed && r.status !== 'cancelled' && r.status !== 'dismissed'
+    ).length;
+  }, [reminders]);
 
   const convertTaskToHabit = useCallback((taskId: string) => {
     const task = tasks.find((t) => t.id === taskId);
@@ -702,13 +1070,19 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       highlights,
       reports,
       sources,
+      reminders,
+      scheduleItems,
+      activeAlertReminder,
+      activeRemindersCount,
       toast,
       activeFocusSession,
       rings,
       todayTasks,
       todayFocusMinutes,
       currentStreak,
+      conflicts,
       addTask,
+      createTaskWithReminder,
       toggleTask,
       deleteTask,
       updateTask,
@@ -716,6 +1090,15 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       convertTaskToHabit,
       batchCompleteTasks,
       batchDeleteTasks,
+      breakdownTask,
+      applyDayPlan,
+      rescheduleTaskWithSlot,
+      addExtractedTasks,
+      snoozeReminder,
+      dismissReminder,
+      completeReminder,
+      deleteReminder,
+      scheduleTestReminder,
       addHabit,
       toggleHabitToday,
       skipHabitToday,
@@ -749,13 +1132,19 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       highlights,
       reports,
       sources,
+      reminders,
+      scheduleItems,
+      activeAlertReminder,
+      activeRemindersCount,
       toast,
       activeFocusSession,
       rings,
       todayTasks,
       todayFocusMinutes,
       currentStreak,
+      conflicts,
       addTask,
+      createTaskWithReminder,
       toggleTask,
       deleteTask,
       updateTask,
@@ -763,6 +1152,15 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       convertTaskToHabit,
       batchCompleteTasks,
       batchDeleteTasks,
+      breakdownTask,
+      applyDayPlan,
+      rescheduleTaskWithSlot,
+      addExtractedTasks,
+      snoozeReminder,
+      dismissReminder,
+      completeReminder,
+      deleteReminder,
+      scheduleTestReminder,
       addHabit,
       toggleHabitToday,
       skipHabitToday,

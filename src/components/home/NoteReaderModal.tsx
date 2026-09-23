@@ -1,7 +1,10 @@
 // SmartDay Note Reader & Editor Modal
-// Comprehensive academic and study notes viewer with markdown-like sections and instant editing
+// Comprehensive academic and study notes viewer with:
+// 1. Text-to-Speech "Read Aloud" with Play, Pause, Resume, Stop, adjustable speed & speaking indicator
+// 2. Voice-to-Text Dictation with mic button, listening indicator, stop button & language support
+// 3. AI Note Cleanup and Summarization
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,9 +14,19 @@ import {
   TextInput,
   ScrollView,
   Platform,
+  Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Note } from '../../types';
+import {
+  readNote,
+  pauseReading,
+  resumeReading,
+  stopReading,
+  TTSStatus,
+  getSpeechRecognition,
+} from '../../services/speechService';
+import { cleanUpNoteWithAI, summarizeNoteWithAI } from '../../services/aiService';
 
 interface NoteReaderModalProps {
   visible: boolean;
@@ -45,34 +58,180 @@ export const NoteReaderModal: React.FC<NoteReaderModalProps> = ({
 
 • 3NF (Third Normal Form):
 - Must be in 2NF.
-- No transitive dependency: non-prime attributes must not determine other non-prime attributes (X -> Y where neither is superkey).
+- No transitive dependency: non-prime attributes must not determine other non-prime attributes.
 
 • BCNF (Boyce-Codd Normal Form):
 - For every functional dependency X -> Y, X must be a super key.`
   );
 
+  // Text-to-Speech state
+  const [ttsStatus, setTtsStatus] = useState<TTSStatus>('idle');
+  const [readingSpeed, setReadingSpeed] = useState<number>(1.0);
+
+  // Dictation state
+  const [isListening, setIsListening] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
+
+  // AI State
+  const [aiPreview, setAiPreview] = useState<string | null>(null);
+
+  // Pulse animation for speaking/listening
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    let anim: Animated.CompositeAnimation | null = null;
+    if (ttsStatus === 'speaking' || isListening) {
+      anim = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.25, duration: 550, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.0, duration: 550, useNativeDriver: true }),
+        ])
+      );
+      anim.start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+    return () => anim?.stop();
+  }, [ttsStatus, isListening]);
+
   // Sync state on open
-  React.useEffect(() => {
+  useEffect(() => {
     if (note) {
       setTitle(note.title);
       setBody(note.body);
     }
     setIsEditing(false);
+    setAiPreview(null);
+    if (!visible) {
+      stopReading();
+      setTtsStatus('idle');
+      handleStopDictation();
+    }
   }, [note, visible]);
 
+  // --------------------------------------------------------------------------
+  // TTS Handlers
+  // --------------------------------------------------------------------------
+  const handleToggleReadAloud = () => {
+    // Stop dictation if running
+    handleStopDictation();
+
+    if (ttsStatus === 'speaking') {
+      pauseReading();
+      setTtsStatus('paused');
+      return;
+    }
+    if (ttsStatus === 'paused') {
+      resumeReading();
+      setTtsStatus('speaking');
+      return;
+    }
+
+    const textToRead = `${title}. ${body}`.trim();
+    if (!textToRead) return;
+
+    readNote({
+      text: textToRead,
+      rate: readingSpeed,
+      onStatusChange: (status) => setTtsStatus(status),
+    });
+  };
+
+  const handleStopReading = () => {
+    stopReading();
+    setTtsStatus('idle');
+  };
+
+  const handleChangeSpeed = (newSpeed: number) => {
+    setReadingSpeed(newSpeed);
+    if (ttsStatus === 'speaking' || ttsStatus === 'paused') {
+      stopReading();
+      readNote({
+        text: `${title}. ${body}`.trim(),
+        rate: newSpeed,
+        onStatusChange: (status) => setTtsStatus(status),
+      });
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  // Dictation Handlers
+  // --------------------------------------------------------------------------
+  const handleStartDictation = async () => {
+    handleStopReading();
+    const controller = getSpeechRecognition();
+
+    const ok = await controller.start({
+      onFinalResult: (finalText) => {
+        setBody((prev) => {
+          const trimmed = prev.trim();
+          if (!trimmed) return finalText;
+          const endsWithPunct = /[.!?]$/.test(trimmed);
+          return `${trimmed}${endsWithPunct ? ' ' : '. '}${finalText}`;
+        });
+        setInterimTranscript('');
+      },
+      onInterimResult: (interim) => {
+        setInterimTranscript(interim);
+      },
+      onStateChange: (listening) => {
+        setIsListening(listening);
+      },
+    });
+
+    if (!ok) setIsListening(false);
+  };
+
+  const handleStopDictation = () => {
+    const controller = getSpeechRecognition();
+    controller.stop();
+    setIsListening(false);
+    if (interimTranscript.trim()) {
+      setBody((prev) => {
+        const trimmed = prev.trim();
+        if (!trimmed) return interimTranscript.trim();
+        return `${trimmed} ${interimTranscript.trim()}`;
+      });
+      setInterimTranscript('');
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  // AI Actions
+  // --------------------------------------------------------------------------
+  const handleCleanUp = async () => {
+    if (!body.trim()) return;
+    const res = await cleanUpNoteWithAI(body);
+    setAiPreview(res);
+  };
+
+  const handleSummarize = async () => {
+    if (!body.trim()) return;
+    const res = await summarizeNoteWithAI(body);
+    setAiPreview(res);
+  };
+
   const handleSave = () => {
+    handleStopDictation();
+    handleStopReading();
     if (note && onSaveNote) {
       onSaveNote(note.id, title, body);
     }
     setIsEditing(false);
   };
 
+  const handleClose = () => {
+    handleStopReading();
+    handleStopDictation();
+    onClose();
+  };
+
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
       <View style={styles.overlay}>
-        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={handleClose} />
 
         <View style={styles.modalCard}>
           {/* Top Bar */}
@@ -88,6 +247,37 @@ export const NoteReaderModal: React.FC<NoteReaderModalProps> = ({
             </View>
 
             <View style={styles.actionIcons}>
+              {/* Read Aloud Icon Button */}
+              <TouchableOpacity
+                onPress={handleToggleReadAloud}
+                style={[
+                  styles.audioTopBtn,
+                  {
+                    backgroundColor: ttsStatus === 'speaking' ? '#059669' : '#ECFDF5',
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={
+                    ttsStatus === 'speaking'
+                      ? 'pause'
+                      : ttsStatus === 'paused'
+                      ? 'play'
+                      : 'volume-high-outline'
+                  }
+                  size={16}
+                  color={ttsStatus === 'speaking' ? '#FFFFFF' : '#059669'}
+                />
+                <Text
+                  style={[
+                    styles.audioTopBtnText,
+                    { color: ttsStatus === 'speaking' ? '#FFFFFF' : '#059669' },
+                  ]}
+                >
+                  {ttsStatus === 'speaking' ? 'Pause' : ttsStatus === 'paused' ? 'Resume' : 'Read'}
+                </Text>
+              </TouchableOpacity>
+
               <TouchableOpacity
                 onPress={() => (isEditing ? handleSave() : setIsEditing(true))}
                 style={styles.editBtn}
@@ -95,11 +285,52 @@ export const NoteReaderModal: React.FC<NoteReaderModalProps> = ({
                 <Ionicons name={isEditing ? 'checkmark' : 'pencil'} size={18} color="#059669" />
                 <Text style={styles.editBtnText}>{isEditing ? 'Save' : 'Edit'}</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+              <TouchableOpacity onPress={handleClose} style={styles.closeBtn}>
                 <Ionicons name="close" size={20} color="#64748B" />
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Text-to-Speech Player Bar (Visible when active or listening) */}
+          {ttsStatus !== 'idle' && (
+            <View style={styles.ttsBar}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Animated.View style={ttsStatus === 'speaking' ? { transform: [{ scale: pulseAnim }] } : {}}>
+                  <Ionicons name="volume-high" size={16} color="#059669" />
+                </Animated.View>
+                <Text style={styles.ttsBarLabel}>
+                  {ttsStatus === 'speaking' ? 'Reading aloud...' : 'Reading paused'}
+                </Text>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {[0.75, 1.0, 1.25, 1.5].map((spd) => (
+                  <TouchableOpacity
+                    key={spd}
+                    onPress={() => handleChangeSpeed(spd)}
+                    style={[
+                      styles.speedPill,
+                      readingSpeed === spd && { backgroundColor: '#059669', borderColor: '#059669' },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.speedPillText,
+                        readingSpeed === spd && { color: '#FFFFFF' },
+                      ]}
+                    >
+                      {spd}x
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+
+                <TouchableOpacity onPress={handleStopReading} style={styles.ttsBarStopBtn}>
+                  <Ionicons name="stop" size={12} color="#DC2626" />
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>Stop</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* Body Content */}
           <ScrollView style={styles.contentScroll} showsVerticalScrollIndicator={false}>
@@ -112,14 +343,64 @@ export const NoteReaderModal: React.FC<NoteReaderModalProps> = ({
                   onChangeText={setTitle}
                   placeholder="Note Title"
                 />
+
+                {/* Voice-to-Text Dictation Row */}
+                <View style={styles.dictateRow}>
+                  <TouchableOpacity
+                    onPress={isListening ? handleStopDictation : handleStartDictation}
+                    style={[
+                      styles.dictateBtn,
+                      { backgroundColor: isListening ? '#DC2626' : '#EFF6FF' },
+                    ]}
+                  >
+                    <Animated.View style={isListening ? { transform: [{ scale: pulseAnim }] } : {}}>
+                      <Ionicons
+                        name={isListening ? 'stop-circle' : 'mic'}
+                        size={16}
+                        color={isListening ? '#FFFFFF' : '#2563EB'}
+                      />
+                    </Animated.View>
+                    <Text
+                      style={[
+                        styles.dictateBtnText,
+                        { color: isListening ? '#FFFFFF' : '#2563EB' },
+                      ]}
+                    >
+                      {isListening ? 'Stop' : '🎤 Dictate'}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={{ fontSize: 11, color: '#64748B', flex: 1 }}>
+                    {isListening ? 'Listening... speech appends without overwriting' : 'Tap to dictate with microphone'}
+                  </Text>
+                </View>
+
+                {interimTranscript.length > 0 && (
+                  <View style={styles.interimBox}>
+                    <Ionicons name="radio-outline" size={13} color="#DC2626" />
+                    <Text style={styles.interimText}>{interimTranscript}</Text>
+                  </View>
+                )}
+
                 <Text style={styles.label}>Notes Content</Text>
                 <TextInput
                   style={styles.bodyInput}
                   value={body}
                   onChangeText={setBody}
                   multiline
-                  placeholder="Write your notes here..."
+                  placeholder="Write your notes here or dictate using the mic above..."
                 />
+
+                {/* Quick AI tools in edit mode */}
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                  <TouchableOpacity onPress={handleCleanUp} style={styles.aiBtn}>
+                    <Ionicons name="sparkles-outline" size={13} color="#7C3AED" />
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#7C3AED' }}>Clean up</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleSummarize} style={styles.aiBtn}>
+                    <Ionicons name="list-outline" size={13} color="#0284C7" />
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#0284C7' }}>Summarize</Text>
+                  </TouchableOpacity>
+                </View>
               </>
             ) : (
               <>
@@ -139,13 +420,70 @@ export const NoteReaderModal: React.FC<NoteReaderModalProps> = ({
                 <View style={styles.divider} />
 
                 <Text style={styles.bodyText}>{body}</Text>
+
+                {/* AI Preview Card if requested */}
+                {aiPreview && (
+                  <View style={styles.aiPreviewBox}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#0F172A' }}>
+                        AI Generated Output
+                      </Text>
+                      <TouchableOpacity onPress={() => setAiPreview(null)}>
+                        <Ionicons name="close" size={16} color="#64748B" />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={{ fontSize: 12, color: '#334155', lineHeight: 18 }}>{aiPreview}</Text>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setBody(aiPreview);
+                        setAiPreview(null);
+                      }}
+                      style={styles.aiApplyBtn}
+                    >
+                      <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 11 }}>
+                        Replace Note Content
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {/* Read Aloud button in viewer mode */}
+                <TouchableOpacity
+                  onPress={handleToggleReadAloud}
+                  style={[
+                    styles.bigReadAloudBtn,
+                    {
+                      backgroundColor: ttsStatus === 'speaking' ? '#059669' : '#0F172A',
+                    },
+                  ]}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons
+                    name={
+                      ttsStatus === 'speaking'
+                        ? 'pause'
+                        : ttsStatus === 'paused'
+                        ? 'play'
+                        : 'volume-high'
+                    }
+                    size={18}
+                    color="#FFFFFF"
+                  />
+                  <Text style={styles.bigReadAloudBtnText}>
+                    {ttsStatus === 'speaking'
+                      ? 'Pause Reading'
+                      : ttsStatus === 'paused'
+                      ? 'Resume Reading'
+                      : '🔊 Read Note Aloud'}
+                  </Text>
+                </TouchableOpacity>
               </>
             )}
           </ScrollView>
 
           {/* Footer */}
           <View style={styles.footer}>
-            <TouchableOpacity style={styles.doneBtn} onPress={onClose}>
+            <TouchableOpacity style={styles.doneBtn} onPress={handleClose}>
               <Text style={styles.doneBtnText}>Close Note</Text>
             </TouchableOpacity>
           </View>
@@ -206,6 +544,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  audioTopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  audioTopBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
   editBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -222,6 +572,45 @@ const styles = StyleSheet.create({
   },
   closeBtn: {
     padding: 6,
+  },
+  ttsBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+  },
+  ttsBarLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#166534',
+  },
+  speedPill: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#FFFFFF',
+  },
+  speedPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  ttsBarStopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
   },
   contentScroll: {
     paddingVertical: 16,
@@ -243,6 +632,39 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 10,
   },
+  dictateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  dictateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  dictateBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  interimBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: 6,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 6,
+    marginBottom: 8,
+  },
+  interimText: {
+    fontSize: 12,
+    color: '#991B1B',
+    fontStyle: 'italic',
+  },
   bodyInput: {
     fontSize: 14,
     color: '#0F172A',
@@ -251,9 +673,36 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
     borderRadius: 12,
     padding: 12,
-    minHeight: 220,
+    minHeight: 180,
     lineHeight: 22,
     textAlignVertical: 'top',
+  },
+  aiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  aiPreviewBox: {
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    marginTop: 12,
+  },
+  aiApplyBtn: {
+    backgroundColor: '#059669',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginTop: 8,
+    alignSelf: 'flex-start',
   },
   noteTitle: {
     fontSize: 22,
@@ -286,6 +735,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#334155',
     lineHeight: 24,
+  },
+  bigReadAloudBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginTop: 20,
+  },
+  bigReadAloudBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
   },
   footer: {
     paddingTop: 12,

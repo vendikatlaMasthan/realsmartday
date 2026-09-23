@@ -26,9 +26,13 @@ import { ScheduleDetailModal, ScheduleItem } from './ScheduleDetailModal';
 import { NotificationsModal } from './NotificationsModal';
 import { TimelineRow } from '../ui/TimelineRow';
 import { QuickCaptureTileRow } from '../ui/QuickCaptureTileRow';
+import { QuickCaptureConfirmModal } from './QuickCaptureConfirmModal';
+import { parseQuickCapture, ExtractedTaskData } from '../../services/reminderEngine';
+import { smartQuickCapture } from '../../services/aiService';
+import { TaskCategory, Priority } from '../../types';
 
-// Masthan avatar image asset
-const avatarImg = require('../../../assets/masthan_avatar.jpg');
+// Avatar fallback icon
+const avatarIcon = 'person';
 
 interface SmartDayStudentHomeProps {
   onNavigateToPlan: () => void;
@@ -63,7 +67,16 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
     todayTasks,
     habits,
     notes,
+    reminders,
+    activeAlertReminder,
+    activeRemindersCount,
+    todayFocusMinutes,
     addTask,
+    createTaskWithReminder,
+    toggleTask,
+    snoozeReminder,
+    completeReminder,
+    dismissReminder,
     addNote,
     showToast,
   } = useSmartDay();
@@ -76,6 +89,8 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [selectedScheduleItem, setSelectedScheduleItem] = useState<ScheduleItem | null>(null);
   const [isScheduleDetailOpen, setIsScheduleDetailOpen] = useState(false);
+  const [extractedData, setExtractedData] = useState<ExtractedTaskData | null>(null);
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
 
   // Quick capture input state
   const [quickCaptureText, setQuickCaptureText] = useState('');
@@ -134,7 +149,7 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
   };
 
   // Handlers for Quick Capture
-  const handleQuickCapture = (type: 'task' | 'note' | 'event') => {
+  const handleQuickCapture = async (type: 'task' | 'note' | 'event') => {
     const text = quickCaptureText.trim();
     if (!text) {
       if (type === 'task') onOpenAddTask();
@@ -143,29 +158,69 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
       return;
     }
 
-    if (type === 'task') {
-      addTask({
-        title: text,
-        priority: 'Med',
-        estimateMin: 30,
-        due: 'Today',
-        tags: ['Quick Capture'],
-      });
-      showToast(`Task added: "${text}"`);
+    if (type === 'task' || type === 'event') {
+      const isComplex =
+        /\b(before|after|couple|few|next|every|in\s+\d+|prior|by\s+the\s+time)\b/i.test(text);
+
+      let parsed = parseQuickCapture(text);
+
+      if (isComplex) {
+        try {
+          const aiResult = await smartQuickCapture(text);
+          if (aiResult.tasks && aiResult.tasks.length > 0) {
+            const first = aiResult.tasks[0];
+            parsed = {
+              ...parsed,
+              title: first.title,
+              date: first.date || parsed.date,
+              time: first.time || parsed.time,
+              category: (first.category as TaskCategory) || parsed.category,
+              priority: (first.priority as Priority) || parsed.priority,
+            };
+          }
+        } catch {
+          // Keep deterministic parsed
+        }
+      }
+
+      if (type === 'event') {
+        parsed.category = 'work';
+        parsed.priority = 'High';
+      }
+      setExtractedData(parsed);
+      setIsConfirmModalOpen(true);
     } else if (type === 'note') {
       addNote(text.substring(0, 30), text);
       showToast(`Note created: "${text.substring(0, 24)}..."`);
-    } else if (type === 'event') {
-      addTask({
-        title: text,
-        priority: 'High',
-        estimateMin: 60,
-        due: 'Today',
-        time: '4:00 PM',
-        tags: ['Event', 'Campus'],
-      });
-      showToast(`Event added to schedule: "${text}"`);
+      setQuickCaptureText('');
     }
+  };
+
+  const handleConfirmQuickTask = (
+    finalData: {
+      title: string;
+      date: string;
+      time: string;
+      category: TaskCategory;
+      priority: Priority;
+      targetTimestamp: number;
+    },
+    enableReminder: boolean,
+    reminderOffset: number
+  ) => {
+    createTaskWithReminder(
+      {
+        title: finalData.title,
+        priority: finalData.priority,
+        category: finalData.category,
+        estimateMin: 30,
+        due: finalData.date,
+        time: finalData.time,
+        tags: ['Quick Capture', finalData.category],
+      },
+      enableReminder ? reminderOffset : undefined
+    );
+    showToast(`Task saved${enableReminder ? ' & reminder scheduled' : ''}!`);
     setQuickCaptureText('');
   };
 
@@ -195,20 +250,57 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
     showToast('Exam removed from schedule');
   };
 
+  // Connected live metrics replacing sample values
+  const todayTasksList = todayTasks.length > 0 ? todayTasks : tasks;
+  const completedTasksCount = todayTasksList.filter((t) => t.status === 'done').length;
+  const totalTasksCount = Math.max(todayTasksList.length, 1);
+  const progressRatio = todayTasksList.length > 0 ? completedTasksCount / totalTasksCount : 0.6;
+  const progressPercent = Math.round(progressRatio * 100);
+
+  const habitsDoneCount = habits.filter((h) => h.logs.some((l) => l.done)).length;
+  const habitsTotalCount = Math.max(habits.length, 1);
+
+  const pendingTasksCount = tasks.filter((t) => t.status !== 'done').length;
+  const eventsCount = tasks.filter((t) => t.tags.includes('Event') || t.tags.includes('Campus')).length + 2;
+  const notesCount = notes.length;
+
+  const topPendingTask =
+    tasks.find((t) => t.status !== 'done' && t.priority === 'High') ||
+    tasks.find((t) => t.status !== 'done') ||
+    null;
+
+  // Next Up schedule items combining today's tasks with time and lecture items
+  const displayScheduleItems: ScheduleItem[] = React.useMemo(() => {
+    const taskScheduleItems: ScheduleItem[] = tasks
+      .filter((t) => t.status !== 'done' && t.time)
+      .map((t) => ({
+        id: t.id,
+        time: t.time || '12:00 PM',
+        title: t.title,
+        location: t.category === 'work' ? 'Academic / Work' : 'Personal',
+        tag: (t.priority === 'High' ? 'Exam' : 'Study') as any,
+        tagColor:
+          t.priority === 'High'
+            ? { bg: '#FEE2E2', text: '#DC2626' }
+            : { bg: '#E6F7F0', text: '#059669' },
+        dotColor: t.priority === 'High' ? '#EF4444' : '#059669',
+        iconName: 'calendar-outline',
+        description: t.notes || 'Created via SmartDay task planner.',
+      }));
+
+    return [...scheduleItems, ...taskScheduleItems].slice(0, 4);
+  }, [tasks, scheduleItems]);
+
   const handleStartFocus = () => {
     setIsFocusActive(true);
     setFocusProgress((prev) => Math.min(prev + 0.1, 1));
-    showToast('Focus session started! Keep your garden growing 🌱');
-    onNavigateToSessions();
+    showToast(
+      topPendingTask
+        ? `Focus session started for "${topPendingTask.title}"`
+        : 'Focus session started! Keep your garden growing 🌱'
+    );
+    onNavigateToSessions(topPendingTask || undefined);
   };
-
-  // Completed task / habit calculations matching reference screenshot
-  // In screenshot: 60% Today's Progress, 3/5 tasks, 1/3 habits, 50m focus
-  const completedTasksCount = 3;
-  const totalTasksCount = 5;
-  const habitsDoneCount = 1;
-  const habitsTotalCount = 3;
-  const focusMinutes = 50;
 
   return (
     <View style={styles.rootContainer}>
@@ -289,17 +381,25 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
                   accessibilityLabel="Notifications"
                 >
                   <Ionicons name="notifications-outline" size={18} color="#FFFFFF" />
-                  <View style={styles.unreadBadgeDot} />
+                  {activeRemindersCount > 0 ? (
+                    <View style={styles.unreadBadgeDot}>
+                      <Text style={{ fontSize: 9, color: '#FFFFFF', fontWeight: '800' }}>
+                        {activeRemindersCount > 9 ? '9+' : activeRemindersCount}
+                      </Text>
+                    </View>
+                  ) : null}
                 </TouchableOpacity>
 
-                {/* Masthan Avatar Photo */}
+                {/* Profile Avatar Button */}
                 <TouchableOpacity
                   style={styles.avatarBtn}
                   onPress={onNavigateToYou}
                   activeOpacity={0.85}
                   accessibilityLabel="User profile"
                 >
-                  <Image source={avatarImg} style={styles.avatarImage} />
+                  <View style={styles.avatarCircle}>
+                    <Text style={styles.avatarText}>M</Text>
+                  </View>
                 </TouchableOpacity>
               </View>
             </View>
@@ -307,19 +407,19 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
         </LinearGradient>
 
         {/* ============================================================
-            2. TODAY'S PROGRESS CARD (Floating with 60% Gauge)
+            2. TODAY'S PROGRESS CARD (Floating with Live Gauge)
            ============================================================ */}
         <View style={styles.progressCard}>
           <View style={styles.progressCardInner}>
-            {/* Left: 60% Circular Progress Meter */}
+            {/* Left: Live Circular Progress Meter */}
             <View style={styles.progressGaugeBox}>
               <CircularProgress
                 size={70}
                 strokeWidth={7}
-                progress={0.6}
+                progress={progressRatio}
                 color="#059669"
                 trackColor="#E2E8F0"
-                label="60%"
+                label={`${progressPercent}%`}
               />
             </View>
 
@@ -328,7 +428,7 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
               <Text style={styles.progressCardTitle}>Today's Progress</Text>
 
               <View style={styles.progressChipsRow}>
-                {/* 3/5 tasks */}
+                {/* Real tasks count */}
                 <TouchableOpacity
                   style={styles.statChip}
                   onPress={onNavigateToPlan}
@@ -338,12 +438,12 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
                     <Ionicons name="checkmark" size={13} color="#059669" />
                   </View>
                   <View style={styles.statChipTextCol}>
-                    <Text style={styles.statChipValue}>3/5</Text>
+                    <Text style={styles.statChipValue}>{completedTasksCount}/{totalTasksCount}</Text>
                     <Text style={styles.statChipLabel}>tasks</Text>
                   </View>
                 </TouchableOpacity>
 
-                {/* 1/3 habits */}
+                {/* Real habits count */}
                 <TouchableOpacity
                   style={styles.statChip}
                   onPress={onOpenLogHabit}
@@ -353,12 +453,12 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
                     <Ionicons name="leaf" size={13} color="#10B981" />
                   </View>
                   <View style={styles.statChipTextCol}>
-                    <Text style={styles.statChipValue}>1/3</Text>
+                    <Text style={styles.statChipValue}>{habitsDoneCount}/{habitsTotalCount}</Text>
                     <Text style={styles.statChipLabel}>habits</Text>
                   </View>
                 </TouchableOpacity>
 
-                {/* 50m focus */}
+                {/* Real focus minutes */}
                 <TouchableOpacity
                   style={styles.statChip}
                   onPress={() => onNavigateToSessions()}
@@ -368,7 +468,7 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
                     <Ionicons name="time-outline" size={13} color="#0D9488" />
                   </View>
                   <View style={styles.statChipTextCol}>
-                    <Text style={styles.statChipValue}>50m</Text>
+                    <Text style={styles.statChipValue}>{todayFocusMinutes}m</Text>
                     <Text style={styles.statChipLabel}>focus</Text>
                   </View>
                 </TouchableOpacity>
@@ -391,7 +491,7 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
             3. FOUR QUICK CATEGORY CARDS (Tasks, Events, Notes, Reminder)
            ============================================================ */}
         <View style={styles.quickCardsRow}>
-          {/* Card 1: 5 Tasks */}
+          {/* Card 1: Tasks */}
           <TouchableOpacity
             style={styles.quickCard}
             onPress={onNavigateToPlan}
@@ -403,11 +503,11 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
               </View>
               <Ionicons name="chevron-forward" size={14} color="#CBD5E1" />
             </View>
-            <Text style={styles.quickCardCount}>5</Text>
+            <Text style={styles.quickCardCount}>{pendingTasksCount}</Text>
             <Text style={styles.quickCardLabel}>Tasks</Text>
           </TouchableOpacity>
 
-          {/* Card 2: 2 Events */}
+          {/* Card 2: Events */}
           <TouchableOpacity
             style={styles.quickCard}
             onPress={onNavigateToPlan}
@@ -419,11 +519,11 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
               </View>
               <Ionicons name="chevron-forward" size={14} color="#CBD5E1" />
             </View>
-            <Text style={styles.quickCardCount}>2</Text>
+            <Text style={styles.quickCardCount}>{eventsCount}</Text>
             <Text style={styles.quickCardLabel}>Events</Text>
           </TouchableOpacity>
 
-          {/* Card 3: 3 Notes */}
+          {/* Card 3: Notes */}
           <TouchableOpacity
             style={styles.quickCard}
             onPress={() => setIsNoteReaderOpen(true)}
@@ -435,11 +535,11 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
               </View>
               <Ionicons name="chevron-forward" size={14} color="#CBD5E1" />
             </View>
-            <Text style={styles.quickCardCount}>3</Text>
+            <Text style={styles.quickCardCount}>{notesCount}</Text>
             <Text style={styles.quickCardLabel}>Notes</Text>
           </TouchableOpacity>
 
-          {/* Card 4: 1 Reminder */}
+          {/* Card 4: Reminders */}
           <TouchableOpacity
             style={styles.quickCard}
             onPress={() => setIsNotificationsOpen(true)}
@@ -451,7 +551,7 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
               </View>
               <Ionicons name="chevron-forward" size={14} color="#CBD5E1" />
             </View>
-            <Text style={styles.quickCardCount}>1</Text>
+            <Text style={styles.quickCardCount}>{activeRemindersCount}</Text>
             <Text style={styles.quickCardLabel}>Reminder</Text>
           </TouchableOpacity>
         </View>
@@ -463,7 +563,25 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
           {/* LEFT COLUMN: Next Up Timeline Card */}
           <View style={[styles.gridCard, isWide ? { flex: 1 } : { width: '100%' }]}>
             <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardHeaderTitle}>Next Up</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={styles.cardHeaderTitle}>Next Up</Text>
+                <TouchableOpacity
+                  onPress={onNavigateToPlan}
+                  activeOpacity={0.8}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 4,
+                    backgroundColor: '#E6F7F0',
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 12,
+                  }}
+                >
+                  <Ionicons name="sparkles" size={12} color="#059669" />
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: '#059669' }}>Plan Day</Text>
+                </TouchableOpacity>
+              </View>
               <TouchableOpacity onPress={onNavigateToPlan} activeOpacity={0.7}>
                 <Text style={styles.seeAllText}>See all</Text>
               </TouchableOpacity>
@@ -471,8 +589,8 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
 
             {/* Timeline List using <TimelineRow> */}
             <View style={styles.timelineList}>
-              {scheduleItems.map((item, idx) => {
-                const isLast = idx === scheduleItems.length - 1;
+              {displayScheduleItems.map((item, idx) => {
+                const isLast = idx === displayScheduleItems.length - 1;
                 return (
                   <TimelineRow
                     key={item.id}
@@ -501,7 +619,7 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
           <View style={[styles.gridCard, isWide ? { flex: 1 } : { width: '100%' }]}>
             <View style={styles.cardHeaderRow}>
               <Text style={styles.cardHeaderTitle}>Today's Focus</Text>
-              <TouchableOpacity onPress={() => onNavigateToSessions()} activeOpacity={0.7}>
+              <TouchableOpacity onPress={() => onNavigateToSessions(topPendingTask || undefined)} activeOpacity={0.7}>
                 <Ionicons name="chevron-forward" size={16} color="#64748B" />
               </TouchableOpacity>
             </View>
@@ -524,8 +642,14 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
                 />
               </View>
 
-              <Text style={styles.focusTitleText}>Start Focus</Text>
-              <Text style={styles.focusSubText}>Stay focused, grow your garden.</Text>
+              <Text style={styles.focusTitleText} numberOfLines={1}>
+                {topPendingTask ? topPendingTask.title : 'All caught up!'}
+              </Text>
+              <Text style={styles.focusSubText} numberOfLines={2}>
+                {topPendingTask
+                  ? `Due: ${topPendingTask.due || 'Today'} · Priority: ${topPendingTask.priority}`
+                  : 'Stay focused, grow your garden.'}
+              </Text>
             </View>
 
             {/* Bottom Button: ▶ Start Focus */}
@@ -611,10 +735,12 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
 
             {/* Input Bar with Microphone */}
             <View style={styles.quickCaptureInputBar}>
-              <Ionicons name="mic" size={18} color="#059669" style={{ marginRight: 8, flexShrink: 0 }} />
+              <TouchableOpacity onPress={onOpenQuickNote} activeOpacity={0.7} style={{ marginRight: 8, padding: 2 }}>
+                <Ionicons name="mic" size={18} color="#059669" />
+              </TouchableOpacity>
               <TextInput
                 style={styles.quickCaptureTextInput}
-                placeholder="What would you like to capture?"
+                placeholder="What would you like to capture? Tap mic to dictate..."
                 placeholderTextColor="#94A3B8"
                 value={quickCaptureText}
                 onChangeText={setQuickCaptureText}
@@ -656,7 +782,7 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
                   icon: 'mic',
                   bg: '#FEF3C7',
                   color: '#B45309',
-                  onPress: () => setIsVoiceModalOpen(true),
+                  onPress: onOpenQuickNote,
                 },
               ]}
             />
@@ -752,6 +878,14 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
         visible={isNotificationsOpen}
         onClose={() => setIsNotificationsOpen(false)}
         onNavigateToPlan={onNavigateToPlan}
+      />
+
+      {/* Quick Capture Confirmation Modal */}
+      <QuickCaptureConfirmModal
+        visible={isConfirmModalOpen}
+        data={extractedData}
+        onClose={() => setIsConfirmModalOpen(false)}
+        onConfirm={handleConfirmQuickTask}
       />
     </View>
   );
@@ -900,6 +1034,18 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.85)',
     overflow: 'hidden',
+  },
+  avatarCircle: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#059669',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
   avatarImage: {
     width: '100%',

@@ -3,12 +3,21 @@
 export type Priority = 'High' | 'Med' | 'Low';
 export type TaskCategory = 'work' | 'personal' | 'urgent';
 export type TaskStatus = 'inbox' | 'scheduled' | 'doing' | 'done';
-export type RecurrencePattern = 'none' | 'daily' | 'weekdays' | 'weekly';
+export type RecurrencePattern = 'none' | 'daily' | 'weekdays' | 'weekly' | 'specific_days' | 'biweekly' | 'weekly_target';
+
+export interface RecurrenceRule {
+  frequency: RecurrencePattern;
+  daysOfWeek?: number[]; // 0=Sun, 1=Mon, ..., 6=Sat
+  targetCountPerWeek?: number; // e.g. 3 times a week
+  intervalWeeks?: number; // 2 for biweekly
+}
 
 export interface Subtask {
   id: string;
   title: string;
   completed: boolean;
+  estimateMin?: number;
+  isEstimate?: boolean;
 }
 
 export interface Task {
@@ -16,19 +25,25 @@ export interface Task {
   title: string;
   notes?: string;
   priority: Priority;
-  category?: TaskCategory; // AI auto-categorized or manually edited (Work, Personal, Urgent)
+  category?: TaskCategory; // Work, Personal, Urgent
   estimateMin: number;
   actualMin?: number;
   due?: string; // ISO or YYYY-MM-DD
-  time?: string; // HH:mm
+  time?: string; // e.g. "11:00 AM" or "14:00"
   status: TaskStatus;
   tags: string[];
   subtasks?: Subtask[];
   linkedNoteId?: string;
   linkedFocusSessionId?: string;
   recurrence?: RecurrencePattern;
+  recurrenceRule?: RecurrenceRule;
+  dependencies?: string[]; // Task IDs that must be completed before this task
+  snoozeCount?: number;
   createdAt: string;
   completedAt?: string;
+  reminderEnabled?: boolean;
+  reminderOffsetMin?: number; // e.g. 0, 5, 10, 15, 30 min before
+  reminderId?: string;
 }
 
 export interface ExamItem {
@@ -58,16 +73,22 @@ export interface ScheduleItem {
   courseCode?: string;
 }
 
+export type ReminderStatus = 'scheduled' | 'triggered' | 'snoozed' | 'cancelled' | 'dismissed';
+
 export interface ReminderItem {
   id: string;
-  title: string;
-  dueTime: string; // e.g. "10:30 AM" or ISO
-  date?: string;   // YYYY-MM-DD
-  notes?: string;
-  snoozedUntil?: string;
-  completed: boolean;
-  alarmFired?: boolean;
   taskId?: string;
+  title: string;
+  dueTime: string; // e.g. "10:30 AM" or formatted time
+  date?: string;   // YYYY-MM-DD
+  targetTimestamp: number; // epoch ms when reminder should fire
+  offsetMinutes?: number; // 0 = at time, 5 = 5m before, etc.
+  notes?: string;
+  snoozedUntil?: string; // display string of snooze time
+  status: ReminderStatus;
+  notificationId?: string; // unique ID for browser notification
+  completed: boolean;
+  isTest?: boolean;
 }
 
 export interface DailySummary {
@@ -251,4 +272,106 @@ export interface CategoryMetricHistory {
   total: number;
   bestDay: { label: string; value: number } | null;
   chartData: { label: string; value: number }[];
+}
+
+// -------------------------------------------------------------
+// Planning Assistant & AI Domain Models
+// -------------------------------------------------------------
+
+export interface TimeSlotOption {
+  date: string; // YYYY-MM-DD
+  time: string; // e.g. "02:30 PM"
+  endTime?: string;
+  durationMin: number;
+  label: string; // e.g. "Free 90m window before DBMS Lecture"
+  score: number;
+}
+
+export type ConflictType = 'overlap' | 'past_deadline' | 'overcapacity' | 'missed';
+
+export interface ScheduleConflict {
+  id: string;
+  type: ConflictType;
+  title: string;
+  explanation: string;
+  item1: { id: string; title: string; time: string; durationMin: number; type: 'task' | 'class' | 'event' };
+  item2?: { id: string; title: string; time: string; durationMin: number; type: 'task' | 'class' | 'event' };
+  suggestedSlots: TimeSlotOption[];
+}
+
+export interface DayPlanBlock {
+  id: string;
+  taskId?: string;
+  title: string;
+  startTime: string; // e.g. "09:00 AM"
+  endTime: string;   // e.g. "09:40 AM"
+  durationMin: number;
+  type: 'task' | 'class' | 'break' | 'event';
+  priority?: Priority;
+  location?: string;
+  notes?: string;
+}
+
+export interface PlannedDaySchedule {
+  date: string;
+  blocks: DayPlanBlock[];
+  freeMinutesRemaining: number;
+  explanation: string;
+  validatedNoConflicts: boolean;
+  tasksScheduledCount: number;
+}
+
+export interface TaskBreakdownStep {
+  id: string;
+  title: string;
+  estimateMin: number;
+  isEstimate: boolean;
+  completed: boolean;
+}
+
+export interface TaskBreakdownResult {
+  taskId: string;
+  taskTitle: string;
+  steps: TaskBreakdownStep[];
+  clarificationQuestion?: string;
+}
+
+export interface ExtractedActionItem {
+  id: string;
+  title: string;
+  originalText: string;
+  explicitDeadline?: string;
+  priority: Priority;
+  category: TaskCategory;
+  isEvent?: boolean;
+  time?: string;
+  needsFollowUp?: boolean;
+  question?: string;
+  selected?: boolean;
+}
+
+export interface HabitPatternInsight {
+  habitId: string;
+  habitName: string;
+  evidence: string; // e.g. "You completed this habit 9 of 12 times between 7 PM and 9 PM."
+  suggestion: string; // e.g. "Would you like to try moving reminder to 8:00 PM?"
+  suggestedTime: string;
+  hasEnoughHistory: boolean;
+}
+
+export interface ProposedAssistantAction {
+  type: 'create_task' | 'reschedule_task' | 'complete_task' | 'plan_day';
+  description: string;
+  payload: any;
+  status: 'pending' | 'confirmed' | 'cancelled' | 'executed';
+}
+
+export interface AssistantChatMessage {
+  id: string;
+  sender: 'user' | 'assistant';
+  text: string;
+  timestamp: string;
+  referencedTaskIds?: string[];
+  referencedScheduleIds?: string[];
+  proposedAction?: ProposedAssistantAction;
 }

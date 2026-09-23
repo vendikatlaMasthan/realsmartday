@@ -356,7 +356,10 @@ export const defaultReminders: ReminderItem[] = [
     title: 'Submit DBMS Normalization Milestone',
     dueTime: '11:59 PM',
     date: new Date().toISOString().split('T')[0],
+    targetTimestamp: Date.now() + 4 * 60 * 60 * 1000,
+    offsetMinutes: 15,
     notes: 'Upload PDF to university portal before midnight.',
+    status: 'scheduled',
     completed: false,
   },
 ];

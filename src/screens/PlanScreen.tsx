@@ -18,6 +18,11 @@ import { ScreenHeader } from '../components/common/ScreenHeader';
 import { useSmartDay } from '../context/SmartDayContext';
 import { Task } from '../types';
 import { TimelineRow } from '../components/ui/TimelineRow';
+import { PlanMyDayModal } from '../components/planner/PlanMyDayModal';
+import { ConflictResolutionModal } from '../components/planner/ConflictResolutionModal';
+import { TaskBreakdownModal } from '../components/planner/TaskBreakdownModal';
+import { AskSmartDayModal } from '../components/planner/AskSmartDayModal';
+import { NotesActionItemsModal } from '../components/planner/NotesActionItemsModal';
 
 interface PlanScreenProps {
   onOpenAddTask: () => void;
@@ -43,11 +48,18 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   onNavigateToYou,
 }) => {
   const insets = useSafeAreaInsets();
-  const { tasks, toggleTask } = useSmartDay();
+  const { tasks, toggleTask, conflicts } = useSmartDay();
 
   const [viewMode, setViewMode] = useState<'timeline' | 'matrix'>('timeline');
   const [selectedDay, setSelectedDay] = useState(21); // Sep 21 matching Home screen
   const [selectedItemDetail, setSelectedItemDetail] = useState<ScheduleItem | null>(null);
+
+  // Planning Assistant Modals
+  const [planModalVisible, setPlanModalVisible] = useState(false);
+  const [conflictModalVisible, setConflictModalVisible] = useState(false);
+  const [askModalVisible, setAskModalVisible] = useState(false);
+  const [notesModalVisible, setNotesModalVisible] = useState(false);
+  const [breakdownTaskTarget, setBreakdownTaskTarget] = useState<Task | null>(null);
 
   // Calendar days around Sep 21
   const daysOfWeek = [
@@ -240,6 +252,75 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
             </View>
           </View>
 
+          {/* AI Daily Planner Hero Banner */}
+          <View style={styles.plannerHeroCard}>
+            <View style={styles.plannerHeroTop}>
+              <View style={styles.sparkleIconBox}>
+                <Ionicons name="sparkles" size={18} color="#059669" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.plannerHeroTitle}>AI Daily Planner</Text>
+                <Text style={styles.plannerHeroSub}>
+                  Optimizes your day around classes with validated study blocks and breaks.
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.plannerHeroActions}>
+              <TouchableOpacity
+                style={styles.planMyDayBtn}
+                onPress={() => setPlanModalVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="sparkles" size={15} color="#FFFFFF" />
+                <Text style={styles.planMyDayBtnText}>Plan My Day</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.askAssistantBtn}
+                onPress={() => setAskModalVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="chatbubbles-outline" size={15} color="#059669" />
+                <Text style={styles.askAssistantBtnText}>Ask SmartDay</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.notesImportBtn}
+                onPress={() => setNotesModalVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="document-text-outline" size={15} color="#475569" />
+                <Text style={styles.notesImportBtnText}>Notes → Tasks</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Conflict Detection Banner if any */}
+          {conflicts.length > 0 && (
+            <TouchableOpacity
+              style={styles.conflictBanner}
+              onPress={() => setConflictModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <View style={styles.conflictIconBadge}>
+                <Ionicons name="alert-circle" size={18} color="#DC2626" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.conflictBannerTitle}>
+                  {conflicts.length} Schedule Conflict{conflicts.length > 1 ? 's' : ''} Detected
+                </Text>
+                <Text style={styles.conflictBannerSub} numberOfLines={1}>
+                  {conflicts[0].title} • Tap to resolve with alternative open slots
+                </Text>
+              </View>
+              <View style={styles.resolveBadge}>
+                <Text style={styles.resolveBadgeText}>Resolve</Text>
+                <Ionicons name="arrow-forward" size={12} color="#DC2626" />
+              </View>
+            </TouchableOpacity>
+          )}
+
           {/* View Mode 1: Day Timeline */}
           {viewMode === 'timeline' ? (
             <View style={styles.sectionContainer}>
@@ -281,13 +362,35 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                     onToggleComplete={() => toggleScheduleComplete(item.id)}
                   >
                     {item.tag === 'Study' && !item.completed && (
-                      <TouchableOpacity
-                        style={styles.focusChip}
-                        onPress={() => onOpenStartFocus()}
-                      >
-                        <Ionicons name="play" size={11} color="#006951" />
-                        <Text style={styles.focusChipText}>Start Focus</Text>
-                      </TouchableOpacity>
+                      <View style={{ flexDirection: 'row', gap: 6 }}>
+                        <TouchableOpacity
+                          style={styles.focusChip}
+                          onPress={() => onOpenStartFocus()}
+                        >
+                          <Ionicons name="play" size={11} color="#006951" />
+                          <Text style={styles.focusChipText}>Start Focus</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.breakdownChip}
+                          onPress={() =>
+                            setBreakdownTaskTarget({
+                              id: item.id,
+                              title: item.title,
+                              time: item.time,
+                              due: 'Today',
+                              estimateMin: 45,
+                              priority: 'High',
+                              category: 'work',
+                              status: 'scheduled',
+                              tags: ['study'],
+                              createdAt: new Date().toISOString(),
+                            })
+                          }
+                        >
+                          <Ionicons name="git-branch-outline" size={11} color="#7C3AED" />
+                          <Text style={styles.breakdownChipText}>Breakdown</Text>
+                        </TouchableOpacity>
+                      </View>
                     )}
                   </TimelineRow>
                 ))}
@@ -432,6 +535,37 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
           </View>
         </Modal>
       )}
+
+      {/* 1. Plan My Day Modal */}
+      <PlanMyDayModal
+        visible={planModalVisible}
+        onClose={() => setPlanModalVisible(false)}
+      />
+
+      {/* 2. Conflict Resolution Modal */}
+      <ConflictResolutionModal
+        visible={conflictModalVisible}
+        onClose={() => setConflictModalVisible(false)}
+      />
+
+      {/* 3. Task Breakdown Modal */}
+      <TaskBreakdownModal
+        visible={!!breakdownTaskTarget}
+        task={breakdownTaskTarget}
+        onClose={() => setBreakdownTaskTarget(null)}
+      />
+
+      {/* 4. Ask SmartDay Modal */}
+      <AskSmartDayModal
+        visible={askModalVisible}
+        onClose={() => setAskModalVisible(false)}
+      />
+
+      {/* 5. Notes to Action Items Modal */}
+      <NotesActionItemsModal
+        visible={notesModalVisible}
+        onClose={() => setNotesModalVisible(false)}
+      />
     </View>
   );
 };
@@ -827,5 +961,152 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#006951',
+  },
+  plannerHeroCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+    marginBottom: 14,
+    shadowColor: '#059669',
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  plannerHeroTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+  },
+  sparkleIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: '#E6F7F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  plannerHeroTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  plannerHeroSub: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  plannerHeroActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  planMyDayBtn: {
+    flex: 1.2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#059669',
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  planMyDayBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  askAssistantBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#E6F7F0',
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+  },
+  askAssistantBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#065F46',
+  },
+  notesImportBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  notesImportBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  conflictBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    padding: 12,
+    marginBottom: 16,
+  },
+  conflictIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  conflictBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  conflictBannerSub: {
+    fontSize: 11,
+    color: '#B91C1C',
+    marginTop: 1,
+  },
+  resolveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  resolveBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
+  breakdownChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F5F3FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+  },
+  breakdownChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#7C3AED',
   },
 });

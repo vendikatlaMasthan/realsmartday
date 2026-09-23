@@ -16,6 +16,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { Button } from '../components/ui/Button';
 import { Priority, TaskCategory, Task } from '../data/mockTasks';
+import { smartQuickCapture } from '../services/aiService';
+import { RecurrencePattern } from '../types';
 
 export interface AddTaskModalProps {
   visible: boolean;
@@ -37,8 +39,15 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
   const [priority, setPriority] = useState<Priority>('medium');
   const [category, setCategory] = useState<TaskCategory>('work');
   const [dueTime, setDueTime] = useState('11:00 AM');
+  const [estimateMin, setEstimateMin] = useState(30);
+  const [recurrence, setRecurrence] = useState<RecurrencePattern>('none');
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [aiOrganizeEnabled, setAiOrganizeEnabled] = useState(true);
+
+  // Quick NLP Capture State
+  const [nlpInput, setNlpInput] = useState('');
+  const [isNlpParsing, setIsNlpParsing] = useState(false);
+  const [inferredNotice, setInferredNotice] = useState<string | null>(null);
 
   const resetForm = () => {
     setTitle('');
@@ -46,6 +55,39 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
     setPriority('medium');
     setCategory('work');
     setDueTime('11:00 AM');
+    setEstimateMin(30);
+    setRecurrence('none');
+    setNlpInput('');
+    setInferredNotice(null);
+  };
+
+  const handleNlpParse = async () => {
+    if (!nlpInput.trim() || isNlpParsing) return;
+    setIsNlpParsing(true);
+    try {
+      const res = await smartQuickCapture(nlpInput);
+      if (res.tasks && res.tasks.length > 0) {
+        const t = res.tasks[0];
+        setTitle(t.title);
+        if (t.time) setDueTime(t.time);
+        if (t.priority) setPriority(t.priority.toLowerCase() as Priority);
+        if (t.category) setCategory(t.category as TaskCategory);
+        if (t.estimateMin) setEstimateMin(t.estimateMin);
+        if (t.recurrence) setRecurrence(t.recurrence);
+
+        if (t.inferredFields && t.inferredFields.length > 0) {
+          setInferredNotice(`Inferred: ${t.inferredFields.join(', ')} (verify below)`);
+        } else if (res.clarifyingQuestion) {
+          setInferredNotice(`Note: ${res.clarifyingQuestion}`);
+        } else {
+          setInferredNotice('Successfully parsed task details!');
+        }
+      }
+    } catch {
+      // Fallback
+    } finally {
+      setIsNlpParsing(false);
+    }
   };
 
   const handleSave = () => {
@@ -172,6 +214,73 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
           ]}
           showsVerticalScrollIndicator={false}
         >
+          {/* Smart NLP Quick Capture Box */}
+          <View
+            style={{
+              backgroundColor: '#F0FDF4',
+              borderColor: '#DCFCE7',
+              borderWidth: 1,
+              borderRadius: borderRadius.lg,
+              padding: spacing.md,
+              marginBottom: spacing.base,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <Ionicons name="sparkles" size={16} color="#059669" />
+              <Text
+                style={{
+                  fontSize: typography.sizes.xs,
+                  fontWeight: '700',
+                  color: '#065F46',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.5,
+                }}
+              >
+                Smarter Quick Capture (AI + Parser)
+              </Text>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TextInput
+                value={nlpInput}
+                onChangeText={setNlpInput}
+                placeholder="e.g. 'Finish presentation 2 days before Friday 4pm ~45m weekly'"
+                placeholderTextColor="#94A3B8"
+                style={{
+                  flex: 1,
+                  backgroundColor: '#FFFFFF',
+                  borderRadius: 8,
+                  paddingHorizontal: 10,
+                  paddingVertical: 8,
+                  fontSize: 13,
+                  color: '#0F172A',
+                  borderWidth: 1,
+                  borderColor: '#E2E8F0',
+                }}
+              />
+              <TouchableOpacity
+                onPress={handleNlpParse}
+                disabled={isNlpParsing || !nlpInput.trim()}
+                style={{
+                  backgroundColor: '#059669',
+                  paddingHorizontal: 12,
+                  borderRadius: 8,
+                  justifyContent: 'center',
+                  opacity: !nlpInput.trim() ? 0.6 : 1,
+                }}
+              >
+                <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12 }}>
+                  {isNlpParsing ? '...' : 'Parse'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {inferredNotice && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8 }}>
+                <Ionicons name="information-circle-outline" size={14} color="#059669" />
+                <Text style={{ fontSize: 11, color: '#065F46', flex: 1 }}>{inferredNotice}</Text>
+              </View>
+            )}
+          </View>
+
           {/* Title Input */}
           <Text
             style={[
@@ -434,6 +543,123 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
               );
             })}
           </ScrollView>
+
+          {/* Estimated Duration Selection */}
+          <Text
+            style={[
+              styles.sectionLabel,
+              {
+                fontSize: typography.sizes.xs,
+                fontWeight: typography.weights.bold,
+                color: colors.textTertiary,
+                textTransform: 'uppercase',
+                letterSpacing: 0.6,
+                marginBottom: spacing.sm,
+              },
+            ]}
+          >
+            Estimated Duration (minutes)
+          </Text>
+          <View style={[styles.chipsRow, { marginBottom: spacing.lg }]}>
+            {[15, 30, 45, 60, 90].map((mins) => {
+              const isSelected = estimateMin === mins;
+              return (
+                <TouchableOpacity
+                  key={`min-${mins}`}
+                  onPress={() => setEstimateMin(mins)}
+                  activeOpacity={0.8}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: isSelected ? colors.primarySurface : colors.surfaceSecondary,
+                      borderColor: isSelected ? colors.primaryLight : colors.border,
+                      borderWidth: 1,
+                      borderRadius: borderRadius.lg,
+                      paddingHorizontal: spacing.md,
+                      paddingVertical: spacing.sm,
+                      marginRight: spacing.sm,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      {
+                        fontSize: typography.sizes.xs + 1,
+                        fontWeight: isSelected ? typography.weights.bold : typography.weights.medium,
+                        color: isSelected ? colors.primaryLight : colors.textSecondary,
+                      },
+                    ]}
+                  >
+                    ~{mins} min
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Recurrence Rule Selection */}
+          <Text
+            style={[
+              styles.sectionLabel,
+              {
+                fontSize: typography.sizes.xs,
+                fontWeight: typography.weights.bold,
+                color: colors.textTertiary,
+                textTransform: 'uppercase',
+                letterSpacing: 0.6,
+                marginBottom: spacing.sm,
+              },
+            ]}
+          >
+            Recurrence Schedule
+          </Text>
+          <View style={[styles.chipsRow, { marginBottom: spacing.lg }]}>
+            {(['none', 'daily', 'weekdays', 'weekly'] as RecurrencePattern[]).map((pattern) => {
+              const isSelected = recurrence === pattern;
+              const labels: Record<RecurrencePattern, string> = {
+                none: 'Does not repeat',
+                daily: 'Daily',
+                weekdays: 'Weekdays',
+                weekly: 'Weekly',
+                specific_days: 'Specific Days',
+                biweekly: 'Bi-weekly',
+                weekly_target: 'Weekly Target',
+              };
+              return (
+                <TouchableOpacity
+                  key={pattern}
+                  onPress={() => setRecurrence(pattern)}
+                  activeOpacity={0.8}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: isSelected ? colors.primarySurface : colors.surfaceSecondary,
+                      borderColor: isSelected ? colors.primaryLight : colors.border,
+                      borderWidth: 1,
+                      borderRadius: borderRadius.lg,
+                      paddingHorizontal: spacing.md,
+                      paddingVertical: spacing.sm,
+                      marginRight: spacing.sm,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      {
+                        fontSize: typography.sizes.xs + 1,
+                        fontWeight: isSelected ? typography.weights.bold : typography.weights.medium,
+                        color: isSelected ? colors.primaryLight : colors.textSecondary,
+                      },
+                    ]}
+                  >
+                    {labels[pattern]}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
           {/* AI Smart Scheduling & Auto-Breakdown Toggle */}
           <View

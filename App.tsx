@@ -24,6 +24,7 @@ import { YouScreen } from './src/screens/YouScreen';
 // Modals & Overlays
 import { FocusSessionModal } from './src/components/ui/FocusSessionModal';
 import { ToastSnackbar } from './src/components/ui/ToastSnackbar';
+import { ReminderAlertBanner } from './src/components/ui/ReminderAlertBanner';
 import { SearchModal } from './src/components/ui/SearchModal';
 import { AddTaskModal } from './src/screens/AddTaskModal';
 import { AddHabitModal } from './src/components/habits/AddHabitModal';
@@ -36,7 +37,14 @@ import { Task } from './src/types';
 function MainNavigator() {
   const { skin, currentSkin } = useSkin();
   const { isDark } = useTheme();
-  const { addTask, activeFocusSession } = useSmartDay();
+  const {
+    addTask,
+    activeFocusSession,
+    activeAlertReminder,
+    snoozeReminder,
+    completeReminder,
+    dismissReminder,
+  } = useSmartDay();
 
   // Active Tab: 5 Tabs
   const [activeTab, setActiveTab] = useState<TabKey>('home');
@@ -68,6 +76,8 @@ function MainNavigator() {
       time: taskData.dueTime || undefined,
       tags: taskData.tags || [],
       subtasks: taskData.subtasks,
+      reminderEnabled: taskData.reminderEnabled ?? true,
+      reminderOffsetMin: taskData.reminderOffsetMin ?? 0,
     });
   };
 
@@ -163,6 +173,14 @@ function MainNavigator() {
 
       {/* Toast Notification (4s undo toast) */}
       <ToastSnackbar />
+
+      {/* Global In-App Reminder Alert Banner (Plays Chime Sound & Banner) */}
+      <ReminderAlertBanner
+        reminder={activeAlertReminder}
+        onSnooze={snoozeReminder}
+        onComplete={completeReminder}
+        onDismiss={dismissReminder}
+      />
 
       {/* Full-Screen Focus Player Modal (when opened from Quick Actions) */}
       <FocusSessionModal
