@@ -4,7 +4,7 @@
 // Instant 200ms fade skin switching across Ember, Halo, Grove, Noir
 
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet, Platform, BackHandler } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import './src/theme/injectIconFont';
@@ -105,6 +105,64 @@ function MainNavigator() {
       return () => window.removeEventListener('keydown', handleKeyDown);
     }
   }, []);
+
+  // Android Hardware & Gesture Back Navigation Handling
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      const onBackPress = () => {
+        if (isQuickCreateVisible) {
+          setIsQuickCreateVisible(false);
+          return true;
+        }
+        if (isAddTaskVisible) {
+          setIsAddTaskVisible(false);
+          return true;
+        }
+        if (isAddHabitVisible) {
+          setIsAddHabitVisible(false);
+          return true;
+        }
+        if (isQuickNoteVisible) {
+          setIsQuickNoteVisible(false);
+          return true;
+        }
+        if (isFileConverterVisible) {
+          setIsFileConverterVisible(false);
+          return true;
+        }
+        if (isSearchVisible) {
+          setIsSearchVisible(false);
+          return true;
+        }
+        if (isWeeklyReportVisible) {
+          setIsWeeklyReportVisible(false);
+          return true;
+        }
+        if (isFocusModalVisible) {
+          setIsFocusModalVisible(false);
+          return true;
+        }
+        if (activeTab !== 'home') {
+          setActiveTab('home');
+          return true;
+        }
+        return false; // Allow standard Android system back (exit or minimize)
+      };
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => subscription.remove();
+    }
+  }, [
+    isQuickCreateVisible,
+    isAddTaskVisible,
+    isAddHabitVisible,
+    isQuickNoteVisible,
+    isFileConverterVisible,
+    isSearchVisible,
+    isWeeklyReportVisible,
+    isFocusModalVisible,
+    activeTab,
+  ]);
 
   return (
     <View style={[styles.container, { backgroundColor: skin.colors.background }]}>

@@ -131,7 +131,9 @@ export class SpeechRecognitionController {
     onStateChange?: (listening: boolean) => void;
   }): Promise<boolean> {
     if (!isSpeechRecognitionSupported() || !this.recognition) {
-      options.onError?.('Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari, or type your note.');
+      options.onError?.(
+        'Speech recognition is not supported in this runtime. You can type your note directly or use the microphone key on your Android keyboard.'
+      );
       return false;
     }
 
