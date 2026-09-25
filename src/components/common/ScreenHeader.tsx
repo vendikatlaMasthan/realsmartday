@@ -8,9 +8,19 @@ import {
   StyleSheet,
   TouchableOpacity,
   Image,
+  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+
+const getFormattedHeaderDate = () => {
+  return new Date().toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+};
 
 export interface ScreenHeaderProps {
   topPadding: number;
@@ -31,7 +41,7 @@ export const ScreenHeader: React.FC<ScreenHeaderProps> = ({
   greetingSub = 'Student OS',
   title = 'VENDIKATLA MASTHAN',
   tagline = "Let's make today productive ✨",
-  dateText = 'Mon, Sep 21, 2024',
+  dateText,
   onDatePress,
   onSearchPress,
   onNotificationsPress,
@@ -39,6 +49,8 @@ export const ScreenHeader: React.FC<ScreenHeaderProps> = ({
   rightCustomAction,
   unreadCount = 2,
 }) => {
+  const displayDate = dateText || getFormattedHeaderDate();
+
   return (
     <LinearGradient
       colors={['#004D40', '#075E4D', '#0B5646']}
@@ -49,17 +61,19 @@ export const ScreenHeader: React.FC<ScreenHeaderProps> = ({
       {/* Subtle organic curved accent overlay */}
       <View style={styles.headerWaveOverlay} pointerEvents="none" />
 
-      {/* Status Bar Row: 9:41 · Cellular · Wi-Fi · Battery 100 */}
-      <View style={styles.statusBarRow}>
-        <Text style={styles.statusBarTime}>9:41</Text>
-        <View style={styles.statusBarIcons}>
-          <Ionicons name="cellular" size={14} color="#FFFFFF" />
-          <Ionicons name="wifi" size={14} color="#FFFFFF" />
-          <View style={styles.batteryPill}>
-            <Text style={styles.batteryText}>100</Text>
+      {/* Status Bar Row: Only displayed in Web desktop preview, hidden on native Android */}
+      {Platform.OS === 'web' && (
+        <View style={styles.statusBarRow}>
+          <Text style={styles.statusBarTime}>9:41</Text>
+          <View style={styles.statusBarIcons}>
+            <Ionicons name="cellular" size={14} color="#FFFFFF" />
+            <Ionicons name="wifi" size={14} color="#FFFFFF" />
+            <View style={styles.batteryPill}>
+              <Text style={styles.batteryText}>100</Text>
+            </View>
           </View>
         </View>
-      </View>
+      )}
 
       {/* Main Header Row */}
       <View style={styles.headerMainRow}>
@@ -80,14 +94,14 @@ export const ScreenHeader: React.FC<ScreenHeaderProps> = ({
         {/* Right: Date Capsule + Action Icons + Profile Avatar */}
         <View style={styles.headerRightCol}>
           {/* Date Capsule */}
-          {dateText ? (
+          {displayDate ? (
             <TouchableOpacity
               style={styles.dateCapsule}
               onPress={onDatePress}
               activeOpacity={0.8}
             >
               <Ionicons name="calendar-outline" size={13} color="#A7F3D0" />
-              <Text style={styles.dateCapsuleText}>{dateText}</Text>
+              <Text style={styles.dateCapsuleText}>{displayDate}</Text>
             </TouchableOpacity>
           ) : null}
 

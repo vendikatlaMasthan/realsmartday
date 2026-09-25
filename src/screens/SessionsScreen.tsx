@@ -110,7 +110,6 @@ export const SessionsScreen: React.FC<SessionsScreenProps> = ({
           greetingSub="Deep Study Focus"
           title="FOCUS & GROVE"
           tagline="50m target · Keep your focus tree flourishing 🌱"
-          dateText="Mon, Sep 21, 2024"
           rightCustomAction={
             <TouchableOpacity
               style={styles.headerGroveBtn}

@@ -43,6 +43,8 @@ import {
   saveStoredSources,
   loadStoredReminders,
   saveStoredReminders,
+  loadStoredSchedule,
+  saveStoredSchedule,
   clearAllLocalData,
 } from '../storage';
 import { translate } from '../i18n';
@@ -172,7 +174,10 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [reports, setReports] = useState<Report[]>(loadStoredReports);
   const [sources, setSources] = useState<DataSource[]>(loadStoredSources);
   const [reminders, setReminders] = useState<ReminderItem[]>(loadStoredReminders);
-  const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>(initialStudentSchedule);
+  const [scheduleItems, setScheduleItems] = useState<ScheduleItem[]>(() => {
+    const stored = loadStoredSchedule();
+    return stored && stored.length > 0 ? stored : initialStudentSchedule;
+  });
   const [activeAlertReminder, setActiveAlertReminder] = useState<ReminderItem | null>(null);
 
   // Active running focus session player
@@ -198,6 +203,7 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => saveStoredReports(reports), [reports]);
   useEffect(() => saveStoredSources(sources), [sources]);
   useEffect(() => saveStoredReminders(reminders), [reminders]);
+  useEffect(() => saveStoredSchedule(scheduleItems), [scheduleItems]);
 
   // Periodic Reminder Heartbeat Scheduler (Checks every 3 seconds & on focus/visibilitychange)
   useEffect(() => {
@@ -599,14 +605,26 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     );
   }, []);
 
-  const rescheduleTaskWithSlot = useCallback((taskId: string, newTime: string, newDate?: string) => {
+  const rescheduleTaskWithSlot = useCallback((targetId: string, newTime: string, newDate?: string) => {
     const targetDate = newDate || todayStr;
+    let foundSchedule = false;
+
     setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, time: newTime, due: targetDate } : t))
+      prev.map((t) => (t.id === targetId ? { ...t, time: newTime, due: targetDate } : t))
     );
+
+    setScheduleItems((prev) => {
+      const match = prev.some((s) => s.id === targetId);
+      if (match) {
+        foundSchedule = true;
+        return prev.map((s) => (s.id === targetId ? { ...s, time: newTime } : s));
+      }
+      return prev;
+    });
+
     setReminders((prev) =>
       prev.map((r) => {
-        if (r.taskId === taskId) {
+        if (r.taskId === targetId) {
           const newTarget = calculateReminderTimestamp(targetDate, newTime, r.offsetMinutes || 0);
           return {
             ...r,
@@ -619,7 +637,12 @@ export const SmartDayProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return r;
       })
     );
-    showToast(`Task rescheduled to ${newTime}`);
+
+    if (foundSchedule) {
+      showToast(`Schedule event moved to ${newTime}`);
+    } else {
+      showToast(`Task rescheduled to ${newTime}`);
+    }
   }, [todayStr, showToast]);
 
   const breakdownTask = useCallback((taskId: string, steps: Subtask[]) => {

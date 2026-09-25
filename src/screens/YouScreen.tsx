@@ -68,7 +68,6 @@ export const YouScreen: React.FC = () => {
           greetingSub="Student Profile & OS"
           title="VENDIKATLA MASTHAN"
           tagline="Computer Science & Engineering • 3rd Year 🎓"
-          dateText="Mon, Sep 21, 2024"
         />
 
         <View style={styles.bodyContent}>

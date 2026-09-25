@@ -39,7 +39,11 @@ export const AddExamModal: React.FC<AddExamModalProps> = ({
 }) => {
   const [courseTitle, setCourseTitle] = useState('');
   const [courseCode, setCourseCode] = useState('');
-  const [date, setDate] = useState('2024-10-15');
+  const [date, setDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 14);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
   const [time, setTime] = useState('10:00 AM');
   const [venue, setVenue] = useState('AB-II - Hall 301');
   const [topics, setTopics] = useState('');

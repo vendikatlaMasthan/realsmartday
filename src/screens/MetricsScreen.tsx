@@ -60,7 +60,6 @@ export const MetricsScreen: React.FC<MetricsScreenProps> = ({
           greetingSub="Academic Analytics"
           title="PERFORMANCE & METRICS"
           tagline="Track your study hours, consistency & course progress 📊"
-          dateText="Mon, Sep 21, 2024"
           onSearchPress={onOpenSearch}
         />
 

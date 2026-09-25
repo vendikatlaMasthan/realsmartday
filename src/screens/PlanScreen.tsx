@@ -1,7 +1,7 @@
 // SmartDay Tab 2 — Plan / Calendar & Timetable Screen
 // Unified Emerald Forest Student OS Design System matching Home Screen
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -51,7 +51,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   const { tasks, toggleTask, conflicts } = useSmartDay();
 
   const [viewMode, setViewMode] = useState<'timeline' | 'matrix'>('timeline');
-  const [selectedDay, setSelectedDay] = useState(21); // Sep 21 matching Home screen
+  const [selectedDay, setSelectedDay] = useState(() => new Date().getDate());
   const [selectedItemDetail, setSelectedItemDetail] = useState<ScheduleItem | null>(null);
 
   // Planning Assistant Modals
@@ -61,16 +61,28 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   const [notesModalVisible, setNotesModalVisible] = useState(false);
   const [breakdownTaskTarget, setBreakdownTaskTarget] = useState<Task | null>(null);
 
-  // Calendar days around Sep 21
-  const daysOfWeek = [
-    { day: 'Thu', date: 17, hasDot: false },
-    { day: 'Fri', date: 18, hasDot: true },
-    { day: 'Sat', date: 19, hasDot: false },
-    { day: 'Sun', date: 20, hasDot: true },
-    { day: 'Mon', date: 21, hasDot: true, isToday: true },
-    { day: 'Tue', date: 22, hasDot: true },
-    { day: 'Wed', date: 23, hasDot: false },
-  ];
+  // Current month badge text
+  const currentMonthYear = useMemo(() => {
+    return new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }, []);
+
+  // Calendar days centered dynamically around today
+  const daysOfWeek = useMemo(() => {
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const now = new Date();
+    const result = [];
+    for (let offset = -3; offset <= 3; offset++) {
+      const d = new Date(now);
+      d.setDate(now.getDate() + offset);
+      result.push({
+        day: dayNames[d.getDay()],
+        date: d.getDate(),
+        hasDot: offset === 0 || Math.abs(offset) % 2 === 1,
+        isToday: offset === 0,
+      });
+    }
+    return result;
+  }, []);
 
   // Schedule data for the day
   const [scheduleList, setScheduleList] = useState<ScheduleItem[]>([
@@ -163,7 +175,6 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
           greetingSub="Academic Calendar"
           title="PLAN & SCHEDULE"
           tagline="Master your classes, study hours & deadlines 📚"
-          dateText="Mon, Sep 21, 2024"
           onAvatarPress={onNavigateToYou}
           rightCustomAction={
             <TouchableOpacity
@@ -186,7 +197,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
             <View style={styles.calendarHeaderRow}>
               <View style={styles.monthBadge}>
                 <Ionicons name="calendar" size={14} color="#059669" />
-                <Text style={styles.monthBadgeText}>September 2024</Text>
+                <Text style={styles.monthBadgeText}>{currentMonthYear}</Text>
               </View>
 
               <View style={styles.viewModeTabs}>

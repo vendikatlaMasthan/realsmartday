@@ -325,17 +325,19 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
           {/* Subtle wave curve styling overlay */}
           <View style={styles.headerWaveOverlay} pointerEvents="none" />
 
-          {/* Status Bar Row: 9:41 · Cellular · Wi-Fi · Battery 100 */}
-          <View style={styles.statusBarRow}>
-            <Text style={styles.statusBarTime}>9:41</Text>
-            <View style={styles.statusBarIcons}>
-              <Ionicons name="cellular" size={14} color="#FFFFFF" />
-              <Ionicons name="wifi" size={14} color="#FFFFFF" />
-              <View style={styles.batteryPill}>
-                <Text style={styles.batteryText}>100</Text>
+          {/* Status Bar Row: Only displayed in Web desktop preview, hidden on native Android */}
+          {Platform.OS === 'web' && (
+            <View style={styles.statusBarRow}>
+              <Text style={styles.statusBarTime}>9:41</Text>
+              <View style={styles.statusBarIcons}>
+                <Ionicons name="cellular" size={14} color="#FFFFFF" />
+                <Ionicons name="wifi" size={14} color="#FFFFFF" />
+                <View style={styles.batteryPill}>
+                  <Text style={styles.batteryText}>100</Text>
+                </View>
               </View>
             </View>
-          </View>
+          )}
 
           {/* Main Header Content */}
           <View style={styles.headerMainRow}>
@@ -358,7 +360,14 @@ export const SmartDayStudentHome: React.FC<SmartDayStudentHomeProps> = ({
                 activeOpacity={0.8}
               >
                 <Ionicons name="calendar-outline" size={13} color="#A7F3D0" />
-                <Text style={styles.dateCapsuleText}>Mon, Sep 21, 2024</Text>
+                <Text style={styles.dateCapsuleText}>
+                  {new Date().toLocaleDateString('en-US', {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                  })}
+                </Text>
               </TouchableOpacity>
 
               {/* Action Icons Row */}
